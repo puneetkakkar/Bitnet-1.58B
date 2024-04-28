@@ -3,6 +3,16 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 
+def eval_decorator(fn):
+    def inner(model, *args, **kwargs):
+        was_training = model.training
+        model.eval()
+        out = fn(model, *args, **kwargs)
+        model.train(was_training)
+        return out
+
+    return inner
+
 class AutoRegressiveWrapper(nn.Module):
 
     def __init__(self, net, max_sequence_length=2048, pad_value=0):
@@ -11,6 +21,8 @@ class AutoRegressiveWrapper(nn.Module):
         self.pad_value = pad_value
         self.net = net
 
+    @torch.no_grad()
+    @eval_decorator
     def generate(self, start_tokens, sequence_length, eos_token=None, temperature=1.0, filter_thres=0.9, **kwargs):
         b, t, device = *start_tokens.shape, start_tokens.device
         out = start_tokens

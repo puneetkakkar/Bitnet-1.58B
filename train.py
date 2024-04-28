@@ -5,11 +5,15 @@ import numpy as np
 import torch
 import tqdm
 from torch.utils.data import DataLoader, Dataset
-from torch.optim import Adam
+from zeta.optim import StableAdamWUnfused
 
 from auto_regressive_wrapper import AutoRegressiveWrapper
 from bitnet_transformer import BitNetTransformer
 from datasets import load_dataset
+
+# Device constants
+CUDA_DEVICE = 'cuda'
+CPU_DEVICE = 'cpu'
 
 epochs = int(101)
 batch_size = 4
@@ -19,6 +23,17 @@ validate_at_every = 5
 generate_at_every = 10
 generate_str_length = 512
 sequence_length = 1024
+
+cuda_available = torch.cuda.is_available()
+device = None
+
+if cuda_available:
+    device = torch.device(CUDA_DEVICE)
+    print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+else:
+    device = torch.device(CPU_DEVICE)
+    print("Using CPU")
+
 
 def cycle(loader):
     while True:
@@ -34,7 +49,16 @@ def decode_tokens(tokens):
 model = BitNetTransformer(num_tokens=256, dim=512, depth=8)
 model = AutoRegressiveWrapper(model, max_sequence_length=sequence_length)
 
-dataset = load_dataset("wikitext")
+if device == CUDA_DEVICE:
+
+    if torch.cuda.device_count() > 1:
+        print("Using", torch.cuda.device_count(), "GPUs!")
+        model = torch.nn.DataParallel(model)
+
+    model.cuda()
+
+
+dataset = load_dataset('wikitext', 'wikitext-2-raw-v1')
 
 split = 'train'
 
@@ -66,7 +90,10 @@ val_dataset = TextSamplerDataset(data_val, sequence_length)
 train_loader = cycle(DataLoader(train_dataset, batch_size=batch_size))
 val_loader = cycle(DataLoader(val_dataset, batch_size=batch_size))
 
-optim = Adam(model.parameters(), lr=lr)
+optim = StableAdamWUnfused( model.parameters(), lr=lr)
+
+best_val_loss = float('inf')
+best_epoch = 0
 
 for i in tqdm.tqdm(range(epochs), desc="training"):
     model.train()
@@ -83,8 +110,15 @@ for i in tqdm.tqdm(range(epochs), desc="training"):
     if i % validate_at_every == 0:
         model.eval()
         with torch.no_grad():
-            loss = model(next(val_loader))
-            print(f"validation loss: {loss.mean().item()}")
+            val_loss = model(next(val_loader)).mean().item()
+            print(f"validation loss: {val_loss}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_state = model.state_dict()
+
+                torch.save(best_model_state, 'best_bitnet_model.pth')
+                print(f"Best Model Saved!!!")
 
     if i % generate_at_every == 0:
         model.eval()
@@ -96,3 +130,6 @@ for i in tqdm.tqdm(range(epochs), desc="training"):
         
         output_str = decode_tokens(sample[0])
         print(output_str)
+
+if best_model_state is not None:
+    torch.save(best_model_state, 'best_bitnet_model.pth')
