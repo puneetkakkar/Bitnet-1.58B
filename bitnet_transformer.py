@@ -35,15 +35,16 @@ class Transformer(nn.Module):
                     dim,
                     dim,
                     ff_mult,
+                    swish=True,
                     post_act_ln=True,
-                    # dropout=0.1,
+                    dropout=0.1,
                 ),
             )
 
     def forward(self, x: Tensor, *args, **kwargs) -> Tensor:
         skip = x
         for attn, ffn in zip(self.layers, self.ffn_layers):
-            x = attn(x, x, x, *args, **kwargs)
+            x, _ = attn(x, x, x, is_causal=True, *args, **kwargs)
             x = x + skip
             x = ffn(x) + x
         return x
@@ -64,10 +65,7 @@ class BitNetTransformer(nn.Module):
         self.transformer = Transformer(
             dim=dim, depth=depth, heads=heads, ff_mult=ff_mult
         )
-        self.to_logits = nn.Sequential(
-                            RMSNorm(dim), 
-                            nn.Linear(dim, num_tokens)
-                        )
+        self.to_logits = nn.Sequential(RMSNorm(dim), nn.Linear(dim, num_tokens))
 
     def forward(self, x):
         x = self.emb(x)
