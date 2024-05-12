@@ -1,1 +1,9 @@
-__pycache__
+__pycache__/
+wandb/
+charts/
+models/
+graph-generator.ipynb
+best_bitnet_model.pth
+bitnet_model_1.pth
+train.ipynb
+train1.py
