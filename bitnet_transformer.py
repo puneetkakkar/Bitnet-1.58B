@@ -4,70 +4,50 @@ from torch import Tensor
 from torch import nn
 
 from bitnet_feed_forward import BitnetFeedForward
-from bitnet_multi_head_attention import BitnetMultiAttention
+from bitnet_multi_group_query_attention import BitnetMultiGroupQueryAttention
 
 
 class RMSNorm(nn.Module):
-
     def __init__(self, dim, affine=True):
         super().__init__()
-        self.scale = dim**0.5
-        self.gamma = nn.Parameter(torch.ones(dim)) if affine else 1.0
+        self.scale_factor = dim ** 0.5
+        self.affine = nn.Parameter(torch.ones(dim)) if affine else 1.0
 
     def forward(self, x):
-        return F.normalize(x, dim=-1) * self.gamma * self.scale
+        return F.normalize(x, dim=-1) * self.affine * self.scale_factor
 
 
-class Transformer(nn.Module):
+class TransformerLayer(nn.Module):
 
-    def __init__(
-        self, dim: int, heads: int, depth: int, ff_mult: int = 2, *args, **kwargs
-    ):
+    def __init__( self, dim, heads, ff_mult=2, attn_dropout=0.1, ff_dropout=0.1):
         super().__init__()
         self.layers = nn.ModuleList([])
         self.ffn_layers = nn.ModuleList([])
 
-        for _ in range(depth):
-            self.layers.append(BitnetMultiAttention(dim, heads, *args, **kwargs))
+        self.multi_head_attn = BitnetMultiGroupQueryAttention(dim, heads, dropout=attn_dropout)
 
-            self.ffn_layers.append(
-                BitnetFeedForward(
-                    dim,
-                    dim,
-                    ff_mult,
-                    swish=True,
-                    post_act_ln=True,
-                    dropout=0.1,
-                ),
-            )
+        self.feed_forward = BitnetFeedForward(dim, dim, ff_mult)
 
-    def forward(self, x: Tensor, *args, **kwargs) -> Tensor:
-        skip = x
-        for attn, ffn in zip(self.layers, self.ffn_layers):
-            x, _ = attn(x, x, x, is_causal=True, *args, **kwargs)
-            x = x + skip
-            x = ffn(x) + x
+    def forward(self, x):
+        skip_connection = x
+        x = self.multi_head_attn(x, x, x)
+        x = x + skip_connection
+        x = self.feed_forward(x) + x
         return x
 
 
 class BitNetTransformer(nn.Module):
 
-    def __init__(
-        self,
-        dim: int,
-        depth: int,
-        num_tokens: int,
-        heads=8,
-        ff_mult=4,
-    ):
+    def __init__( self, token_dim, depth, num_tokens, num_heads=8, ff_mult=4):
         super().__init__()
-        self.emb = nn.Embedding(num_tokens, dim)
-        self.transformer = Transformer(
-            dim=dim, depth=depth, heads=heads, ff_mult=ff_mult
-        )
-        self.to_logits = nn.Sequential(RMSNorm(dim), nn.Linear(dim, num_tokens))
+        self.embedding = nn.Embedding(num_tokens, token_dim)
+        self.transformer = nn.ModuleList([
+            TransformerLayer(token_dim, num_heads, ff_mult=ff_mult) for _ in range(depth)
+        ])
+        self.token_projection = nn.Sequential(RMSNorm(token_dim), nn.Linear(token_dim, num_tokens))
 
     def forward(self, x):
-        x = self.emb(x)
-        x = self.transformer(x)
-        return self.to_logits(x)
+        x = self.embedding(x)
+        for layer in self.transformer:
+            x = layer(x)
+        return self.token_projection(x)
